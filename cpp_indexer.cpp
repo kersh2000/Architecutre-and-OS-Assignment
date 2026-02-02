@@ -13,6 +13,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <windows.h>
+#include <bcrypt.h>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -47,6 +52,108 @@ static std::string jsonEscape(const std::string& s) {
     }
     return out;
 }
+
+static void runFind(const fs::path& root, unsigned long long minBytes) {
+    std::error_code ec;
+
+    for (auto it = fs::recursive_directory_iterator(
+             root, fs::directory_options::skip_permission_denied, ec);
+         it != fs::recursive_directory_iterator();
+         it.increment(ec)) {
+
+        if (ec) { ec.clear(); continue; }
+
+        const auto& e = *it;
+        if (!e.is_regular_file()) continue;
+
+        auto sz = e.file_size(ec);
+        if (ec) { ec.clear(); continue; }
+
+        if (sz > minBytes) {
+            std::cout << e.path() << " (" << sz << " bytes)\n";
+        }
+    }
+}
+
+
+static std::wstring algoToBcryptId(const std::string& algo) {
+    if (algo == "sha256") return BCRYPT_SHA256_ALGORITHM;
+    if (algo == "sha1")   return BCRYPT_SHA1_ALGORITHM;
+    if (algo == "md5")    return BCRYPT_MD5_ALGORITHM;
+    throw std::runtime_error("Unknown hash algorithm: " + algo + " (use sha256, sha1, md5)");
+}
+
+static std::string bytesToHex(const std::vector<unsigned char>& bytes) {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (unsigned char b : bytes) oss << std::setw(2) << (int)b;
+    return oss.str();
+}
+
+static std::string hashFile(const fs::path& file, const std::string& algo) {
+    std::wstring algId = algoToBcryptId(algo);
+
+    BCRYPT_ALG_HANDLE hAlg = nullptr;
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+
+    DWORD objLen = 0, cbData = 0, hashLen = 0;
+
+    if (BCryptOpenAlgorithmProvider(&hAlg, algId.c_str(), nullptr, 0) != 0) {
+        throw std::runtime_error("BCryptOpenAlgorithmProvider failed");
+    }
+
+    if (BCryptGetProperty(hAlg, BCRYPT_OBJECT_LENGTH,
+                          (PUCHAR)&objLen, sizeof(objLen), &cbData, 0) != 0) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        throw std::runtime_error("BCryptGetProperty(BCRYPT_OBJECT_LENGTH) failed");
+    }
+
+    if (BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH,
+                          (PUCHAR)&hashLen, sizeof(hashLen), &cbData, 0) != 0) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        throw std::runtime_error("BCryptGetProperty(BCRYPT_HASH_LENGTH) failed");
+    }
+
+    std::vector<unsigned char> obj(objLen);
+    std::vector<unsigned char> hash(hashLen);
+
+    if (BCryptCreateHash(hAlg, &hHash, obj.data(), objLen, nullptr, 0, 0) != 0) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        throw std::runtime_error("BCryptCreateHash failed");
+    }
+
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        BCryptDestroyHash(hHash);
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        throw std::runtime_error("Could not open file: " + file.string());
+    }
+
+    std::vector<unsigned char> buf(1 << 15); // 32 KiB
+    while (in) {
+        in.read(reinterpret_cast<char*>(buf.data()), (std::streamsize)buf.size());
+        std::streamsize got = in.gcount();
+        if (got <= 0) break;
+
+        if (BCryptHashData(hHash, buf.data(), (ULONG)got, 0) != 0) {
+            BCryptDestroyHash(hHash);
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            throw std::runtime_error("BCryptHashData failed");
+        }
+    }
+
+    if (BCryptFinishHash(hHash, hash.data(), (ULONG)hash.size(), 0) != 0) {
+        BCryptDestroyHash(hHash);
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        throw std::runtime_error("BCryptFinishHash failed");
+    }
+
+    BCryptDestroyHash(hHash);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+
+    return bytesToHex(hash);
+}
+
 
 static std::string permsToString(fs::perms p) {
     auto bit = [&](fs::perms b) { return (p & b) != fs::perms::none; };
@@ -345,24 +452,58 @@ static double runIndexer(const fs::path& root, const fs::path& outputJsonl, int 
 // -----------------------------
 int main(int argc, char** argv) {
     try {
-        fs::path root = R"(c:\VSCodeProjects\Architecutre-and-OS-Assignment\testFiles)";
-        fs::path out  = R"(c:\VSCodeProjects\Architecutre-and-OS-Assignment\index_results.jsonl)";
+        fs::path root = "testFiles";
 
-        int workers = (argc >= 2) ? std::max(1, std::atoi(argv[1])) : (int)std::thread::hardware_concurrency();
+        if (argc >= 2) {
+            std::string cmd = argv[1];
+
+            // --------------------
+            // find > X
+            // --------------------
+            if (cmd == "find" && argc >= 3) {
+                unsigned long long minBytes =
+                    std::stoull(argv[2]);
+                runFind(root, minBytes);
+                return 0;
+            }
+
+            // --------------------
+            // checksum file [--hash algo]
+            // --------------------
+            if (cmd == "checksum" && argc >= 3) {
+                fs::path file = argv[2];
+                std::string algo = "sha256";
+
+                if (argc >= 5 && std::string(argv[3]) == "--hash") {
+                    algo = argv[4];
+                }
+
+                std::string h = hashFile(file, algo);
+                std::cout << algo << "(" << file << ") = " << h << "\n";
+                return 0;
+            }
+        }
+
+        // --------------------
+        // Default: run indexer benchmark
+        // --------------------
+        int workers = (argc >= 2)
+            ? std::max(1, std::atoi(argv[1]))
+            : (int)std::thread::hardware_concurrency();
+
         if (workers <= 0) workers = 4;
 
-        double elapsed = runIndexer(root, out, workers);
+        double elapsed = runIndexer(root, "index_results.jsonl", workers);
 
-        // Print only what you need for the report
         std::cout << "variant=A(thread_pool)"
                   << " workers=" << workers
                   << " elapsed_sec=" << elapsed
                   << "\n";
-
-        return 0;
     }
     catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << "\n";
         return 1;
     }
+
+    return 0;
 }
