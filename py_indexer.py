@@ -120,9 +120,6 @@ def next_job(pool: List[Job]) -> Optional[Job]:
     return job
 
 
-# -----------------------------
-# CLI utilities: find + checksum
-# -----------------------------
 def cmd_find(min_bytes: int, root_dir: Path = Path("testFiles")) -> None:
     """List files in root_dir larger than min_bytes."""
     for dirpath, _, filenames in os.walk(root_dir):
@@ -174,10 +171,8 @@ if __name__ == "__main__":
     default_workers = 4
     results_file = Path("benchmark_py.txt")
 
-    # Handle "simple" commands first (not getopt)
     if args:
         if args[0] == "find":
-            # Accept: find X  OR  find ">" X
             if len(args) == 2:
                 min_bytes = int(args[1])
             elif len(args) == 3 and args[1] == ">":
@@ -197,14 +192,12 @@ if __name__ == "__main__":
             file_path = Path(args[1])
             algo = "sha256"
 
-            # optional: --hash algo
             if len(args) >= 4 and args[2] == "--hash":
                 algo = args[3]
 
             cmd_checksum(file_path, algo)
             raise SystemExit(0)
 
-    # Existing getopt-based flow
     try:
         arguments, values = getopt.getopt(args, options, long_options)
 

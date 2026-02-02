@@ -21,9 +21,6 @@
 
 namespace fs = std::filesystem;
 
-// -----------------------------
-// Job model (kept close to Python)
-// -----------------------------
 struct Job {
     fs::path path;
 
@@ -33,9 +30,7 @@ struct Job {
     int queue_level = 0;
 };
 
-// -----------------------------
-// Small helpers
-// -----------------------------
+// Helper Functions
 static std::string jsonEscape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -188,9 +183,6 @@ static std::string toLower(std::string s) {
     return s;
 }
 
-// -----------------------------
-// Indexing work (similar to Python's index())
-// -----------------------------
 static std::string scanOnePathJson(const fs::path& p) {
     std::string pathStr = p.string();
     std::string nameStr = p.filename().string();
@@ -246,9 +238,6 @@ static std::string scanOnePathJson(const fs::path& p) {
     return json;
 }
 
-// -----------------------------
-// Job creation (similar to build_jobs())
-// -----------------------------
 static std::vector<Job> buildJobs(const fs::path& root) {
     std::vector<Job> jobs;
     int tick = 0;
@@ -299,9 +288,6 @@ static std::vector<Job> buildJobs(const fs::path& root) {
     return jobs;
 }
 
-// -----------------------------
-// Scheduler hook (SJF now)
-// -----------------------------
 static std::optional<Job> chooseNextJob(std::deque<Job>& ready, int /*tick*/) {
     if (ready.empty()) return std::nullopt;
 
@@ -321,9 +307,6 @@ static void onJobFeedback(Job& /*job*/, const std::string& /*jsonRecord*/) {
     // Optional: adjust job.queue_level or est_cost based on record/error
 }
 
-// -----------------------------
-// Thread-pool (Variant A)
-// -----------------------------
 class ThreadPool {
 public:
     explicit ThreadPool(size_t n) : stopping_(false) {
@@ -370,12 +353,6 @@ private:
     bool stopping_;
 };
 
-// -----------------------------
-// Simulation loop (now concurrent)
-// - Uses same function name runIndexer()
-// - Uses SJF chooseNextJob() to feed an in-process queue
-// - Prints elapsed time (and optionally writes JSONL)
-// -----------------------------
 static double runIndexer(const fs::path& root, const fs::path& outputJsonl, int workers) {
     constexpr bool WRITE_JSONL = false; // set true if you must write file records
 
@@ -405,7 +382,7 @@ static double runIndexer(const fs::path& root, const fs::path& outputJsonl, int 
                     {
                         std::lock_guard<std::mutex> lk(ready_mu);
                         if (ready.empty()) return;
-                        ++tick_local; // local tick for worker (global tick isn't meaningful with concurrency)
+                        ++tick_local;
 
                         auto next = chooseNextJob(ready, tick_local);
                         if (!next.has_value()) return;
@@ -415,7 +392,6 @@ static double runIndexer(const fs::path& root, const fs::path& outputJsonl, int 
                     // "Run" job
                     std::string record = scanOnePathJson(job.path);
 
-                    // Append scheduling fields (like Python task())
                     if (!record.empty() && record.back() == '}') {
                         record.pop_back();
                         record += ",\"arrival\":" + std::to_string(job.arrival);
@@ -426,13 +402,11 @@ static double runIndexer(const fs::path& root, const fs::path& outputJsonl, int 
 
                     onJobFeedback(job, record);
 
-                    // Optional output (disabled by default to avoid I/O dominating benchmarks)
                     if constexpr (WRITE_JSONL) {
                         std::lock_guard<std::mutex> lk(out_mu);
                         out << record << "\n";
                     }
 
-                    // Cheap “use” of data to avoid full DCE under optimization flags
                     sink.fetch_add(static_cast<uint64_t>(record.size()), std::memory_order_relaxed);
                 }
             });
@@ -446,10 +420,6 @@ static double runIndexer(const fs::path& root, const fs::path& outputJsonl, int 
     return elapsed.count();
 }
 
-// -----------------------------
-// main: prints elapsed time only
-// Variant B is achieved by recompiling with -O0 vs -O2 etc.
-// -----------------------------
 int main(int argc, char** argv) {
     try {
         fs::path root = "testFiles";
@@ -457,9 +427,6 @@ int main(int argc, char** argv) {
         if (argc >= 2) {
             std::string cmd = argv[1];
 
-            // --------------------
-            // find > X
-            // --------------------
             if (cmd == "find" && argc >= 3) {
                 unsigned long long minBytes =
                     std::stoull(argv[2]);
@@ -467,9 +434,6 @@ int main(int argc, char** argv) {
                 return 0;
             }
 
-            // --------------------
-            // checksum file [--hash algo]
-            // --------------------
             if (cmd == "checksum" && argc >= 3) {
                 fs::path file = argv[2];
                 std::string algo = "sha256";
@@ -484,9 +448,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        // --------------------
-        // Default: run indexer benchmark
-        // --------------------
         int workers = (argc >= 2)
             ? std::max(1, std::atoi(argv[1]))
             : (int)std::thread::hardware_concurrency();
