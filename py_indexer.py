@@ -126,7 +126,7 @@ if __name__ == '__main__':
     options = "p:t:"
     long_options = ["hash", "test"]
     default_workers = 4
-    results_file = Path("benchmark.txt")
+    results_file = Path("benchmark_py.txt")
 
     try:
         arguments, values = getopt.getopt(args, options, long_options)
