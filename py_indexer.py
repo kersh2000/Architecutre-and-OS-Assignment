@@ -4,10 +4,10 @@ Docstring for py_indexer_thread
 
 from dataclasses import dataclass
 from pathlib import Path
-import time, os, sys, getopt, stat, json
+import time, os, sys, getopt, stat, json, statistics
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent import futures
-from typing import Deque, Dict
+from typing import Dict
 
 RAN = False
 
@@ -24,23 +24,21 @@ def main(Executor: futures, workers: int):
     RAN = True
 
     root_dir = Path(r"testFiles")
-    results_file = Path("benchmark.json")
     index_file = Path("index.json")
 
-    exType = "Multiprocessing" if Executor is ProcessPoolExecutor else "Multithreading"
-    print(f"{exType} with {workers} workers...")
+    # print(f"Multiprocessing" if Executor is ProcessPoolExecutor else "Multithreading" with {workers} workers...")
 
     jobs = build_jobs(root_dir)
 
     start = time.time()
     with Executor(max_workers=workers) as ex:
-        results = list(ex.map(task, jobs))
+        results = list(ex.map(task, jobs, chunksize=200))
 
     end = time.time()
     elapsed = end - start
 
-    print(f"Total files indexed = {len(results)}")
-    print(f"Time: {end - start:.6f} seconds")
+    # print(f"Total files indexed = {len(results)}")
+    # print(f"Time: {end - start:.6f} seconds")
 
     with index_file.open("w", encoding="utf-8") as f:
         f.write(json.dumps(results) + '\n')
@@ -70,7 +68,6 @@ def index(filepath: Path):
         record["size_bytes"] = fileStats.st_size
         record["mtime"] = fileStats.st_mtime
         record["atime"] = fileStats.st_atime
-        record["ctime"] = fileStats.st_ctime
 
         record["extension"] = filepath.suffix.lower()
 
@@ -129,6 +126,7 @@ if __name__ == '__main__':
     options = "p:t:"
     long_options = ["hash", "test"]
     default_workers = 4
+    results_file = Path("benchmark.txt")
 
     try:
         arguments, values = getopt.getopt(args, options, long_options)
@@ -139,6 +137,23 @@ if __name__ == '__main__':
             elif currArg == "-t":
                 workers = int(currVal) if currVal else default_workers
                 main(ThreadPoolExecutor, workers)
+            elif currArg == "--test":
+                with results_file.open("w", encoding="utf-8") as f:
+                    f.write("")
+                iterations = 10
+                worker_interval = 1
+                worker_iterations = 12
+                with results_file.open("a", encoding="utf-8") as f:
+                    for i in range(worker_iterations):
+                        workers = 1 + (i * worker_interval)
+                        times = []
+                        for j in range(iterations):
+                            times.append(main(ProcessPoolExecutor, workers))
+                        f.write(f"Mean time of {workers} processes = {statistics.mean(times):.5f}!\n")
+                        times = []
+                        for j in range(iterations):
+                            times.append(main(ThreadPoolExecutor, workers))
+                        f.write(f"Mean time of {workers} threads = {statistics.mean(times):.5f}!\n")
 
     except getopt.error as err:
         print(str(err))
